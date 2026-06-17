@@ -1,0 +1,60 @@
+{
+  "spoon_dimensions": {
+    "length_m": 0.17,
+    "width_m": 0.08,
+    "thickness_m": 0.015
+  },
+  "material_properties": {
+    "remanence_typical_tesla": 0.4,
+    "remanence_min_tesla": 0.15,
+    "remanence_max_tesla": 0.6,
+    "coercivity_typical_A_per_m": 40000,
+    "susceptibility_base": 100.0,
+    "anisotropy_constant_typical_J_per_m3": 10000,
+    "density_kg_per_m3": 5150
+  },
+  "micromagnetic_simulation": {
+    "boltzmann_constant": 1.380649e-23,
+    "vacuum_permeability": 1.25663706212e-6,
+    "gyromagnetic_ratio": 1.760859644e11,
+    "friction_coefficient_default": 0.3,
+    "friction_coefficient_min": 0.05,
+    "friction_coefficient_max": 0.9,
+    "demagnetization_factor_approx": 0.1,
+    "thermal_fluctuation_scale": 5.0,
+    "stability_ratio_minimum": 1.0,
+    "accuracy_levels_deg": [0.5, 2.0, 5.0],
+    "accuracy_levels_value": [0.1, 0.5, 1.0, 2.0]
+  },
+  "finite_element_corrections": {
+    "bowl_edge_coefficient": 0.08,
+    "handle_tip_coefficient": 0.06,
+    "domain_wall_energy_scale": 0.001,
+    "corner_correction_weight": 0.3,
+    "weak_magnetization_boost": 0.15,
+    "field_saturation_T": 0.05,
+    "kriging_eastasia_enabled": true,
+    "simplification_tolerance_px": 2.5
+  },
+  "device_defaults": {
+    "default_target_year_bce": 100,
+    "default_location_lat": 34.265,
+    "default_location_lon": 108.955,
+    "reporting_interval_seconds": 60,
+    "temperature_deg_c_default": 20.0
+  },
+  "validation_ranges": {
+    "magnetic_moment_min_Am2": 0.001,
+    "magnetic_moment_max_Am2": 100.0,
+    "remanence_min_T": 0.01,
+    "remanence_max_T": 2.0,
+    "temperature_min_deg_c": -50.0,
+    "temperature_max_deg_c": 150.0,
+    "latitude_min_deg": -90.0,
+    "latitude_max_deg": 90.0,
+    "longitude_min_deg": -180.0,
+    "longitude_max_deg": 180.0,
+    "year_min_bce": 3000,
+    "year_max_ce": 2000
+  }
+}

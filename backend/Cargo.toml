@@ -12,7 +12,7 @@ serde_json = "1.0"
 serde_with = "3.4"
 clickhouse = "0.14"
 uuid = { version = "1.6", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde", "utc"] }
+chrono = { version = "0.4", features = ["serde"] }
 rumqttc = "0.24"
 reqwest = { version = "0.11", features = ["json", "blocking"] }
 tracing = "0.1"
@@ -24,10 +24,10 @@ rand = "0.8"
 rand_distr = "0.4"
 nalgebra = "0.32"
 lazy_static = "1.4"
-cors = "0.2"
 tower-http = { version = "0.5", features = ["cors"] }
 futures = "0.3"
 bytes = "1.5"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

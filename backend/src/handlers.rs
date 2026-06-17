@@ -1,11 +1,7 @@
-use crate::alert_service::AlertService;
-use crate::cals10k_model::CALS10KModel;
+use crate::channels::{AlarmCommand, ChannelSenders, DtuCommand, GeomagneticCommand, SimulatorCommand};
 use crate::database::Database;
-use crate::errors::Result;
-use crate::micromagnetic_simulation::MicromagneticSimulator;
-use crate::models::{
-    AlertAcknowledgeRequest, PointingSimulationParams, SinanSensorData, VectorFieldRequest,
-};
+use crate::errors::{AppError, Result};
+use crate::models::{AlertAcknowledgeRequest, PointingSimulationParams, SinanSensorData, VectorFieldRequest};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -17,14 +13,11 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: Database,
-    pub alert_service: Arc<AlertService>,
-    pub simulator: Arc<MicromagneticSimulator>,
-    pub geomagnetic_model: Arc<RwLock<CALS10KModel>>,
+    pub senders: ChannelSenders,
     pub sensor_data_cache: Arc<RwLock<HashMap<String, SinanSensorData>>>,
 }
 
@@ -33,65 +26,27 @@ pub async fn health_check() -> Json<serde_json::Value> {
         "status": "ok",
         "timestamp": Utc::now().to_rfc3339(),
         "service": "sinan-backend",
-        "version": "1.0.0"
+        "version": "2.0.0",
+        "architecture": "actor-mpsc"
     }))
 }
 
 pub async fn receive_sensor_data(
     State(state): State<AppState>,
-    Json(mut data): Json<SinanSensorData>,
+    Json(data): Json<SinanSensorData>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
-    data.id = Uuid::new_v4();
-    data.timestamp = Utc::now();
-
-    let moment_vec = state.simulator.calculate_magnetic_moment_from_sensor(
-        data.magnetic_moment_x,
-        data.magnetic_moment_y,
-        data.magnetic_moment_z,
-    );
-    data.magnetic_moment_magnitude = moment_vec.magnitude();
-
-    let geo_field = state
-        .geomagnetic_model
-        .read()
-        .get_field_vector(data.location_lat, data.location_lon, 2024.0)?;
-
-    data.pointing_deviation = state
-        .simulator
-        .calculate_pointing_deviation(moment_vec, geo_field)?;
-
-    let alert = state.alert_service.process_sensor_data(&mut data).await?;
-
-    state.db.insert_sensor_data(&data).await?;
-
     state
-        .sensor_data_cache
-        .write()
-        .insert(data.device_id.clone(), data.clone());
+        .senders
+        .dtu_tx
+        .send(DtuCommand::ReceiveSensor(data))
+        .await
+        .map_err(|e| AppError::InternalError(format!("DTU通道发送失败: {}", e)))?;
 
-    let mut response = serde_json::json!({
+    Ok((StatusCode::OK, Json(serde_json::json!({
         "status": "success",
-        "message": "传感器数据已接收",
-        "data": {
-            "id": data.id.to_string(),
-            "timestamp": data.timestamp.to_rfc3339(),
-            "device_id": data.device_id,
-            "pointing_deviation": data.pointing_deviation,
-            "is_alert": data.is_alert,
-            "magnetic_moment_magnitude": data.magnetic_moment_magnitude,
-        }
-    });
-
-    if let Some(alert) = alert {
-        response["alert"] = serde_json::json!({
-            "alert_id": alert.id.to_string(),
-            "alert_level": alert.alert_level,
-            "message": alert.message,
-            "mqtt_published": alert.mqtt_published,
-        });
-    }
-
-    Ok((StatusCode::OK, Json(response)))
+        "message": "传感器数据已提交到处理管线",
+        "architecture": "dtu_receiver → magnetic_simulator → alarm_mqtt"
+    }))))
 }
 
 pub async fn get_sensor_data(
@@ -156,7 +111,7 @@ pub async fn get_device_status(
 ) -> Result<Json<serde_json::Value>> {
     let device_id = params
         .get("device_id")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 device_id 参数".to_string()))?;
+        .ok_or_else(|| AppError::InvalidParameter("缺少 device_id 参数".to_string()))?;
 
     let status = state.db.get_device_status(device_id).await?;
 
@@ -193,30 +148,42 @@ pub async fn calculate_geomagnetic_field(
 ) -> Result<Json<serde_json::Value>> {
     let lat: f64 = params
         .get("lat")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 lat 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 lat 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("lat 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("lat 参数格式错误".to_string()))?;
     let lon: f64 = params
         .get("lon")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 lon 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 lon 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("lon 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("lon 参数格式错误".to_string()))?;
     let target_year: f64 = params
         .get("year")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 year 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 year 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("year 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("year 参数格式错误".to_string()))?;
     let altitude_km: f64 = params
         .get("altitude")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0.0);
 
-    let field_data = state
-        .geomagnetic_model
-        .read()
-        .calculate_field_at_point(lat, lon, target_year, Some(altitude_km))?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
 
-    state.db.insert_geomagnetic_data(&field_data).await?;
+    state
+        .senders
+        .geo_tx
+        .send(GeomagneticCommand::CalculateField {
+            lat,
+            lon,
+            year: target_year,
+            altitude_km: Some(altitude_km),
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|e| AppError::InternalError(format!("地磁通道发送失败: {}", e)))?;
+
+    let field_data = reply_rx
+        .await
+        .map_err(|_| AppError::InternalError("地磁计算响应通道关闭".to_string()))??;
 
     Ok(Json(serde_json::json!({
         "status": "success",
@@ -228,10 +195,21 @@ pub async fn generate_vector_field(
     State(state): State<AppState>,
     Json(request): Json<VectorFieldRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let response = state
-        .geomagnetic_model
-        .read()
-        .generate_vector_field(&request)?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+
+    state
+        .senders
+        .geo_tx
+        .send(GeomagneticCommand::GenerateVectorField {
+            request,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|e| AppError::InternalError(format!("地磁通道发送失败: {}", e)))?;
+
+    let response = reply_rx
+        .await
+        .map_err(|_| AppError::InternalError("矢量场计算响应通道关闭".to_string()))??;
 
     Ok(Json(serde_json::json!({
         "status": "success",
@@ -243,15 +221,18 @@ pub async fn run_pointing_simulation(
     State(state): State<AppState>,
     Json(params): Json<PointingSimulationParams>,
 ) -> Result<Json<serde_json::Value>> {
-    let geo_field = state.geomagnetic_model.read().get_field_vector(
-        params.location_lat,
-        params.location_lon,
-        params.target_year,
-    )?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
 
-    let result = state.simulator.simulate_pointing(&params, geo_field)?;
+    state
+        .senders
+        .sim_tx
+        .send(SimulatorCommand::RunSimulation(params, reply_tx))
+        .await
+        .map_err(|e| AppError::InternalError(format!("仿真通道发送失败: {}", e)))?;
 
-    state.db.insert_simulation_result(&result).await?;
+    let result = reply_rx
+        .await
+        .map_err(|_| AppError::InternalError("仿真响应通道关闭".to_string()))??;
 
     Ok(Json(serde_json::json!({
         "status": "success",
@@ -303,7 +284,18 @@ pub async fn acknowledge_alert(
     State(state): State<AppState>,
     Json(request): Json<AlertAcknowledgeRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    state.alert_service.acknowledge_alert(request.alert_id).await?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+
+    state
+        .senders
+        .alarm_tx
+        .send(AlarmCommand::AcknowledgeAlert(request.alert_id, reply_tx))
+        .await
+        .map_err(|e| AppError::InternalError(format!("告警通道发送失败: {}", e)))?;
+
+    reply_rx
+        .await
+        .map_err(|_| AppError::InternalError("告警确认响应通道关闭".to_string()))??;
 
     Ok(Json(serde_json::json!({
         "status": "success",
@@ -317,15 +309,9 @@ pub async fn acknowledge_alert(
 pub async fn get_statistics(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     let stats = state.db.get_statistics().await?;
 
-    let thresholds = serde_json::json!({
-        "warning_threshold": state.alert_service.get_warning_threshold(),
-        "critical_threshold": state.alert_service.get_critical_threshold(),
-    });
-
     Ok(Json(serde_json::json!({
         "status": "success",
         "data": stats,
-        "thresholds": thresholds,
     })))
 }
 
@@ -335,24 +321,37 @@ pub async fn get_secular_variation(
 ) -> Result<Json<serde_json::Value>> {
     let lat: f64 = params
         .get("lat")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 lat 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 lat 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("lat 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("lat 参数格式错误".to_string()))?;
     let lon: f64 = params
         .get("lon")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 lon 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 lon 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("lon 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("lon 参数格式错误".to_string()))?;
     let target_year: f64 = params
         .get("year")
-        .ok_or_else(|| crate::errors::AppError::InvalidParameter("缺少 year 参数".to_string()))?
+        .ok_or_else(|| AppError::InvalidParameter("缺少 year 参数".to_string()))?
         .parse()
-        .map_err(|_| crate::errors::AppError::InvalidParameter("year 参数格式错误".to_string()))?;
+        .map_err(|_| AppError::InvalidParameter("year 参数格式错误".to_string()))?;
 
-    let (d_intensity, d_declination, d_inclination) = state
-        .geomagnetic_model
-        .read()
-        .calculate_secular_variation(lat, lon, target_year)?;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+
+    state
+        .senders
+        .geo_tx
+        .send(GeomagneticCommand::CalculateSecularVariation {
+            lat,
+            lon,
+            year: target_year,
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|e| AppError::InternalError(format!("地磁通道发送失败: {}", e)))?;
+
+    let (d_intensity, d_declination, d_inclination) = reply_rx
+        .await
+        .map_err(|_| AppError::InternalError("长期变计算响应通道关闭".to_string()))??;
 
     Ok(Json(serde_json::json!({
         "status": "success",
@@ -371,19 +370,20 @@ pub async fn get_secular_variation(
 pub async fn sensor_data_stream(
     State(state): State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = std::result::Result<Event, std::convert::Infallible>>> {
-    let cache = state.sensor_data_cache.clone();
+    let broadcast_rx = state.senders.broadcast_tx.subscribe();
 
-    let stream = tokio_stream::iter(()).then(move |_| {
-        let cache = cache.clone();
-        async move {
-            let data: Vec<_> = cache.read().values().cloned().collect();
-            Event::default()
-                .json_data(&data)
-                .unwrap_or_else(|_| Event::default().data("{}"))
-        }
-    })
-    .throttle(std::time::Duration::from_secs(1))
-    .map(Ok);
+    let stream = tokio_stream::wrappers::BroadcastStream::new(broadcast_rx)
+        .filter_map(|result| {
+            match result {
+                Ok(data) => {
+                    let event = Event::default()
+                        .json_data(&data)
+                        .unwrap_or_else(|_| Event::default().data("{}"));
+                    Some(Ok(event))
+                }
+                Err(_) => None,
+            }
+        });
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()

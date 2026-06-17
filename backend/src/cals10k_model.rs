@@ -497,17 +497,23 @@ impl CALS10KModel {
     fn calibrate_with_archaeo_data(&mut self) {
         for site in &self.archaeo_data {
             let year = site.sample_age;
-            if let Some(coeffs) = self.time_series.get_mut(&(year.round() as i64)) {
-                let current_intensity = self.calculate_field_intensity_at_point(
-                    site.location_lat,
-                    site.location_lon,
-                    year,
-                );
+            let current_result = self.calculate_field_intensity_at_point(
+                site.location_lat,
+                site.location_lon,
+                year,
+            );
 
-                if let Ok(current) = current_intensity {
-                    let intensity_ratio = site.intensity / current.field_intensity;
-                    let adjustment = 1.0 + (intensity_ratio - 1.0) * 0.3;
+            if let Ok(current) = current_result {
+                let intensity_ratio = site.intensity / current.field_intensity;
+                let adjustment = 1.0 + (intensity_ratio - 1.0) * 0.3;
 
+                let current_declination = current.declination;
+                let declination_diff = site.declination - current_declination;
+                let dec_rad = declination_diff * PI / 180.0;
+                let cos_dec = dec_rad.cos();
+                let sin_dec = dec_rad.sin();
+
+                if let Some(coeffs) = self.time_series.get_mut(&(year.round() as i64)) {
                     for n in 1..=MAX_DEGREE {
                         for m in 0..=n {
                             coeffs.g[n][m] *= adjustment;
@@ -516,13 +522,6 @@ impl CALS10KModel {
                             }
                         }
                     }
-
-                    let current_declination = current.declination;
-                    let declination_diff = site.declination - current_declination;
-
-                    let dec_rad = declination_diff * PI / 180.0;
-                    let cos_dec = dec_rad.cos();
-                    let sin_dec = dec_rad.sin();
 
                     for n in 1..=MAX_DEGREE {
                         for m in 1..=n {
@@ -747,7 +746,14 @@ impl CALS10KModel {
         p[0][0] = 1.0;
         dp[0][0] = 0.0;
 
-        for n in 1..=max_degree {
+        if max_degree >= 1 {
+            p[1][0] = cos_theta;
+            dp[1][0] = -sin_theta;
+            p[1][1] = sin_theta;
+            dp[1][1] = cos_theta;
+        }
+
+        for n in 2..=max_degree {
             let n_f64 = n as f64;
 
             p[n][0] = ((2.0 * n_f64 - 1.0) * cos_theta * p[n - 1][0]

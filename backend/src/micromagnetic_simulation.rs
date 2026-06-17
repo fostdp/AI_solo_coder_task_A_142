@@ -1,7 +1,6 @@
 use crate::errors::{AppError, Result};
 use crate::models::{PointingSimulationParams, PointingSimulationResult};
-use nalgebra::{Vector3, Rotation3, Matrix3};
-use rand::Rng;
+use nalgebra::{Vector3, Matrix3};
 use rand_distr::{Normal, Distribution};
 use std::f64::consts::PI;
 

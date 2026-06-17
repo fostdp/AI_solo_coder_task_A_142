@@ -27,37 +27,26 @@ impl MqttService {
             options.set_credentials(&config.mqtt_username, &config.mqtt_password);
         }
 
-        match AsyncClient::new(options, 100) {
-            (client, mut eventloop) => {
-                let enabled = true;
-                let topic = config.mqtt_topic.clone();
+        let (client, mut eventloop) = AsyncClient::new(options, 100);
 
-                tokio::spawn(async move {
-                    loop {
-                        match eventloop.poll().await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                tracing::warn!("MQTT事件循环错误: {}", e);
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                            }
-                        }
+        let topic = config.mqtt_topic.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match eventloop.poll().await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!("MQTT事件循环错误: {}", e);
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                     }
-                });
+                }
+            }
+        });
 
-                Self {
-                    client: Some(client),
-                    topic,
-                    enabled,
-                }
-            }
-            Err(e) => {
-                tracing::error!("MQTT客户端创建失败: {}", e);
-                Self {
-                    client: None,
-                    topic: config.mqtt_topic.clone(),
-                    enabled: false,
-                }
-            }
+        Self {
+            client: Some(client),
+            topic,
+            enabled: true,
         }
     }
 
@@ -103,7 +92,7 @@ impl MqttService {
             }
             Err(e) => {
                 tracing::error!("MQTT告警推送失败: {}", e);
-                Err(AppError::MqttError(e))
+                Err(AppError::InternalError(format!("MQTT推送失败: {}", e)))
             }
         }
     }
@@ -159,7 +148,7 @@ impl MqttService {
             }
             Err(e) => {
                 tracing::error!("MQTT自定义告警推送失败: {}", e);
-                Err(AppError::MqttError(e))
+                Err(AppError::InternalError(format!("MQTT状态更新推送失败: {}", e)))
             }
         }
     }
@@ -197,7 +186,7 @@ impl MqttService {
             Ok(_) => Ok(true),
             Err(e) => {
                 tracing::warn!("MQTT状态更新推送失败: {}", e);
-                Err(AppError::MqttError(e))
+                Err(AppError::InternalError(format!("MQTT状态更新推送失败: {}", e)))
             }
         }
     }

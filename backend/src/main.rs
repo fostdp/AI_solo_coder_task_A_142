@@ -1,18 +1,27 @@
+mod alarm_mqtt;
 mod alert_service;
 mod cals10k_model;
+mod channels;
 mod config;
 mod database;
+mod dtu_receiver;
 mod errors;
+mod geomagnetic_reconstructor;
 mod handlers;
 pub mod micromagnetic_simulation;
+mod magnetic_simulator;
 mod models;
 mod mqtt_service;
 
-use crate::alert_service::AlertService;
+use crate::alarm_mqtt::AlarmMqttActor;
 use crate::cals10k_model::CALS10KModel;
+use crate::channels::ChannelHub;
 use crate::config::Config;
 use crate::database::Database;
-use crate::handlers::*;
+use crate::dtu_receiver::DtuReceiver;
+use crate::geomagnetic_reconstructor::GeomagneticReconstructor;
+use crate::handlers::AppState;
+use crate::magnetic_simulator::MagneticSimulatorActor;
 use crate::micromagnetic_simulation::MicromagneticSimulator;
 use crate::models::ArchaeologyMagneticData;
 use crate::mqtt_service::MqttService;
@@ -34,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    tracing::info!("正在启动司南磁石指向精度仿真系统...");
+    tracing::info!("正在启动司南磁石指向精度仿真系统 (Actor架构)...");
 
     let config = Config::from_env()?;
     tracing::info!("配置加载完成");
@@ -48,29 +57,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if mqtt_service.is_enabled() { "已启用" } else { "未启用" }
     );
 
-    let alert_service = Arc::new(AlertService::new(config.clone(), db.clone(), mqtt_service.clone()));
-    tracing::info!("告警服务初始化完成");
-
     let simulator = Arc::new(MicromagneticSimulator::new());
     tracing::info!("微磁学仿真器初始化完成");
 
-    let mut geomagnetic_model = Arc::new(RwLock::new(CALS10KModel::new()));
+    let geomagnetic_model = Arc::new(RwLock::new(CALS10KModel::new()));
     tracing::info!("CALS10K地磁场模型初始化完成");
 
     let archaeo_data = load_archaeomagnetic_data();
     geomagnetic_model
         .write()
         .load_archaeomagnetic_data(archaeo_data);
-    tracing::info!("考古地磁数据已加载并校准");
+    tracing::info!("考古地磁数据已加载并校准 (含东亚克里金插值)");
 
-    let sensor_data_cache = Arc::new(RwLock::new(HashMap::new()));
+    let sensor_data_cache: Arc<RwLock<HashMap<String, crate::models::SinanSensorData>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+
+    let hub = ChannelHub::new();
+    let (senders, receivers) = hub.split();
+
+    let mut dtu_receiver = DtuReceiver::new(
+        receivers.dtu_rx,
+        senders.clone(),
+        db.clone(),
+        sensor_data_cache.clone(),
+    );
+
+    let mut magnetic_simulator_actor = MagneticSimulatorActor::new(
+        receivers.sim_rx,
+        senders.clone(),
+        db.clone(),
+        simulator.clone(),
+        geomagnetic_model.clone(),
+    );
+
+    let mut geomagnetic_reconstructor = GeomagneticReconstructor::new(
+        receivers.geo_rx,
+        geomagnetic_model.clone(),
+        db.clone(),
+    );
+
+    let mut alarm_mqtt_actor = AlarmMqttActor::new(
+        receivers.alarm_rx,
+        db.clone(),
+        mqtt_service.clone(),
+        config.clone(),
+    );
 
     let app_state = AppState {
         db: db.clone(),
-        alert_service: alert_service.clone(),
-        simulator,
-        geomagnetic_model,
-        sensor_data_cache,
+        senders: senders.clone(),
+        sensor_data_cache: sensor_data_cache.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -79,52 +115,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/health", get(health_check))
-        .route("/api/v1/sensor", post(receive_sensor_data))
-        .route("/api/v1/sensor/data", get(get_sensor_data))
-        .route("/api/v1/sensor/latest", get(get_latest_sensor_data))
-        .route("/api/v1/sensor/stream", get(sensor_data_stream))
-        .route("/api/v1/device/status", get(get_device_status))
-        .route("/api/v1/devices", get(get_all_devices))
-        .route("/api/v1/geomagnetic/field", get(calculate_geomagnetic_field))
-        .route("/api/v1/geomagnetic/vectorfield", post(generate_vector_field))
-        .route("/api/v1/geomagnetic/secular", get(get_secular_variation))
-        .route("/api/v1/simulation/pointing", post(run_pointing_simulation))
-        .route("/api/v1/simulation/results", get(get_simulation_results))
-        .route("/api/v1/alerts/active", get(get_active_alerts))
-        .route("/api/v1/alerts/acknowledge", post(acknowledge_alert))
-        .route("/api/v1/statistics", get(get_statistics))
+        .route("/health", get(handlers::health_check))
+        .route("/api/v1/sensor", post(handlers::receive_sensor_data))
+        .route("/api/v1/sensor/data", get(handlers::get_sensor_data))
+        .route("/api/v1/sensor/latest", get(handlers::get_latest_sensor_data))
+        .route("/api/v1/sensor/stream", get(handlers::sensor_data_stream))
+        .route("/api/v1/device/status", get(handlers::get_device_status))
+        .route("/api/v1/devices", get(handlers::get_all_devices))
+        .route("/api/v1/geomagnetic/field", get(handlers::calculate_geomagnetic_field))
+        .route("/api/v1/geomagnetic/vectorfield", post(handlers::generate_vector_field))
+        .route("/api/v1/geomagnetic/secular", get(handlers::get_secular_variation))
+        .route("/api/v1/simulation/pointing", post(handlers::run_pointing_simulation))
+        .route("/api/v1/simulation/results", get(handlers::get_simulation_results))
+        .route("/api/v1/alerts/active", get(handlers::get_active_alerts))
+        .route("/api/v1/alerts/acknowledge", post(handlers::acknowledge_alert))
+        .route("/api/v1/statistics", get(handlers::get_statistics))
         .with_state(app_state)
         .layer(cors);
 
-    let addr = format!("{}:{}", config.server_host, config.server_port);
-    tracing::info!("HTTP服务器监听地址: {}", addr);
+    tokio::spawn(async move {
+        tracing::info!("DTU接收器Actor启动");
+        dtu_receiver.run().await;
+    });
 
-    let alert_service_clone = alert_service.clone();
+    tokio::spawn(async move {
+        tracing::info!("微磁学仿真Actor启动");
+        magnetic_simulator_actor.run().await;
+    });
+
+    tokio::spawn(async move {
+        tracing::info!("地磁场重建Actor启动");
+        geomagnetic_reconstructor.run().await;
+    });
+
+    tokio::spawn(async move {
+        tracing::info!("告警/MQTT Actor启动");
+        alarm_mqtt_actor.run().await;
+    });
+
+    let alarm_senders = senders.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
-            match alert_service_clone.check_and_send_pending_alerts().await {
-                Ok(count) if count > 0 => {
-                    tracing::info!("已重发 {} 条待推送告警", count);
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::error!("检查待推送告警失败: {}", e);
-                }
+            if let Err(e) = alarm_senders.alarm_tx.send(crate::channels::AlarmCommand::CheckPendingAlerts).await {
+                tracing::error!("发送待推送告警检查命令失败: {}", e);
             }
         }
     });
 
+    let addr = format!("{}:{}", config.server_host, config.server_port);
+    tracing::info!("HTTP服务器监听地址: {}", addr);
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("司南磁石指向精度仿真系统启动完成!");
-    tracing::info!("API文档:");
-    tracing::info!("  POST /api/v1/sensor - 接收传感器数据");
-    tracing::info!("  GET  /api/v1/sensor/data - 查询传感器数据");
-    tracing::info!("  GET  /api/v1/geomagnetic/field - 计算地磁场");
-    tracing::info!("  POST /api/v1/geomagnetic/vectorfield - 生成矢量场");
-    tracing::info!("  POST /api/v1/simulation/pointing - 运行指向仿真");
+    tracing::info!("司南磁石指向精度仿真系统启动完成! (Actor架构)");
+    tracing::info!("模块: dtu_receiver → magnetic_simulator → alarm_mqtt");
+    tracing::info!("模块: geomagnetic_reconstructor (独立请求-响应)");
+    tracing::info!("通信: tokio mpsc channel (buffer=256) + broadcast (SSE)");
 
     axum::serve(listener, app).await?;
 

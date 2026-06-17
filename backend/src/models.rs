@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clickhouse::Row)]
 pub struct SinanSensorData {
     #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
@@ -22,7 +22,7 @@ pub struct SinanSensorData {
     pub is_alert: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clickhouse::Row)]
 pub struct GeomagneticFieldData {
     #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
@@ -61,7 +61,7 @@ pub struct PointingSimulationParams {
     pub expected_azimuth: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clickhouse::Row)]
 pub struct PointingSimulationResult {
     #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
@@ -84,7 +84,7 @@ pub struct PointingSimulationResult {
     pub model_parameters: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clickhouse::Row)]
 pub struct AlertEvent {
     #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,

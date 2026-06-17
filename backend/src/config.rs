@@ -29,7 +29,7 @@ impl Config {
             clickhouse_port: env::var("CLICKHOUSE_PORT")
                 .unwrap_or_else(|_| "8123".to_string())
                 .parse()
-                .map_err(|e| crate::errors::AppError::ConfigError(format!("CLICKHOUSE_PORT 解析失败: {}", e))?,
+                .map_err(|e| crate::errors::AppError::ConfigError(format!("CLICKHOUSE_PORT 解析失败: {}", e)))?,
             clickhouse_user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "default".to_string()),
             clickhouse_password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
             clickhouse_database: env::var("CLICKHOUSE_DATABASE").unwrap_or_else(|_| "sinan_db".to_string()),
@@ -37,7 +37,7 @@ impl Config {
             mqtt_port: env::var("MQTT_PORT")
                 .unwrap_or_else(|_| "1883".to_string())
                 .parse()
-                .map_err(|e| crate::errors::AppError::ConfigError(format!("MQTT_PORT 解析失败: {}", e))?,
+                .map_err(|e| crate::errors::AppError::ConfigError(format!("MQTT_PORT 解析失败: {}", e)))?,
             mqtt_client_id: env::var("MQTT_CLIENT_ID").unwrap_or_else(|_| "sinan-backend".to_string()),
             mqtt_topic: env::var("MQTT_TOPIC").unwrap_or_else(|_| "sinan/alerts".to_string()),
             mqtt_username: env::var("MQTT_USERNAME").unwrap_or_default(),
@@ -46,15 +46,15 @@ impl Config {
             server_port: env::var("SERVER_PORT")
                 .unwrap_or_else(|_| "8080".to_string())
                 .parse()
-                .map_err(|e| crate::errors::AppError::ConfigError(format!("SERVER_PORT 解析失败: {}", e))?,
+                .map_err(|e| crate::errors::AppError::ConfigError(format!("SERVER_PORT 解析失败: {}", e)))?,
             pointing_deviation_threshold: env::var("POINTING_DEVIATION_THRESHOLD")
                 .unwrap_or_else(|_| "5.0".to_string())
                 .parse()
-                .map_err(|e| crate::errors::AppError::ConfigError(format!("POINTING_DEVIATION_THRESHOLD 解析失败: {}", e))?,
+                .map_err(|e| crate::errors::AppError::ConfigError(format!("POINTING_DEVIATION_THRESHOLD 解析失败: {}", e)))?,
             critical_deviation_threshold: env::var("CRITICAL_DEVIATION_THRESHOLD")
                 .unwrap_or_else(|_| "10.0".to_string())
                 .parse()
-                .map_err(|e| crate::errors::AppError::ConfigError(format!("CRITICAL_DEVIATION_THRESHOLD 解析失败: {}", e))?,
+                .map_err(|e| crate::errors::AppError::ConfigError(format!("CRITICAL_DEVIATION_THRESHOLD 解析失败: {}", e)))?,
         })
     }
 
