@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>古代司南磁石指向精度仿真与地磁场重建系统</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <h1>古代司南磁石指向精度仿真与地磁场重建系统</h1>
+            <div class="header-stats" id="headerStats">
+                <div class="stat-item">
+                    <span class="stat-label">设备在线</span>
+                    <span class="stat-value" id="deviceCount">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">活动告警</span>
+                    <span class="stat-value alert" id="alertCount">0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">平均偏差</span>
+                    <span class="stat-value" id="avgDeviation">0.0°</span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <aside class="sidebar">
+            <div class="panel">
+                <h3>设备列表</h3>
+                <div class="device-list" id="deviceList">
+                    <div class="loading">加载中...</div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h3>地磁场重建</h3>
+                <div class="form-group">
+                    <label for="targetYear">目标年份</label>
+                    <input type="number" id="targetYear" value="-100" min="-3000" max="2000">
+                </div>
+                <div class="form-group">
+                    <label for="centerLat">中心纬度</label>
+                    <input type="number" id="centerLat" value="34.265" step="0.001">
+                </div>
+                <div class="form-group">
+                    <label for="centerLon">中心经度</label>
+                    <input type="number" id="centerLon" value="108.955" step="0.001">
+                </div>
+                <div class="form-group">
+                    <label for="gridSize">网格密度</label>
+                    <input type="range" id="gridSize" min="5" max="30" value="15">
+                    <span id="gridSizeValue">15</span>
+                </div>
+                <button class="btn btn-primary" id="calcFieldBtn">计算地磁场</button>
+                <button class="btn btn-secondary" id="genVectorBtn">生成矢量场</button>
+            </div>
+
+            <div class="panel">
+                <h3>指向精度仿真</h3>
+                <div class="form-group">
+                    <label for="simDeviceId">设备ID</label>
+                    <select id="simDeviceId">
+                        <option value="SINAN-001">SINAN-001</option>
+                        <option value="SINAN-002">SINAN-002</option>
+                        <option value="SINAN-003">SINAN-003</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="simYear">仿真年份</label>
+                    <input type="number" id="simYear" value="-100">
+                </div>
+                <div class="form-group">
+                    <label for="momentMag">磁矩大小 (A·m²)</label>
+                    <input type="number" id="momentMag" value="0.05" step="0.001">
+                </div>
+                <div class="form-group">
+                    <label for="remanence">剩磁强度 (T)</label>
+                    <input type="number" id="remanence" value="0.4" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label for="temperature">环境温度 (°C)</label>
+                    <input type="number" id="temperature" value="25">
+                </div>
+                <div class="form-group">
+                    <label for="friction">摩擦系数</label>
+                    <input type="number" id="friction" value="0.1" step="0.01" min="0" max="1">
+                </div>
+                <button class="btn btn-primary" id="runSimulationBtn">运行仿真</button>
+            </div>
+
+            <div class="panel">
+                <h3>当前告警</h3>
+                <div class="alert-list" id="alertList">
+                    <div class="no-alerts">暂无告警</div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="content">
+            <div class="view-tabs">
+                <button class="tab-btn active" data-view="model">3D司南模型</button>
+                <button class="tab-btn" data-view="vectorfield">地磁场矢量场</button>
+                <button class="tab-btn" data-view="charts">数据图表</button>
+                <button class="tab-btn" data-view="simulation">仿真结果</button>
+            </div>
+
+            <div class="view-container">
+                <div class="view active" id="modelView">
+                    <div class="canvas-wrapper">
+                        <canvas id="sinanCanvas"></canvas>
+                        <div class="canvas-overlay">
+                            <div class="direction-indicator">
+                                <div class="compass-rose">
+                                    <span class="dir north">北</span>
+                                    <span class="dir east">东</span>
+                                    <span class="dir south">南</span>
+                                    <span class="dir west">西</span>
+                                </div>
+                            </div>
+                            <div class="deviation-label" id="deviationLabel">
+                                <span class="deviation-title">指向偏差</span>
+                                <span class="deviation-value" id="deviationValue">0.0°</span>
+                                <span class="deviation-status" id="deviationStatus">正常</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="model-info">
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="info-label">当前方位角</span>
+                                <span class="info-value" id="currentAzimuth">0.0°</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">理论方位角</span>
+                                <span class="info-value" id="expectedAzimuth">0.0°</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">磁矩大小</span>
+                                <span class="info-value" id="momentMagnitude">0.00 A·m²</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">剩磁强度</span>
+                                <span class="info-value" id="currentRemanence">0.00 T</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">地磁场强度</span>
+                                <span class="info-value" id="fieldIntensity">0 nT</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">环境温度</span>
+                                <span class="info-value" id="currentTemp">0.0°C</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="view" id="vectorfieldView">
+                    <div class="canvas-wrapper">
+                        <canvas id="vectorFieldCanvas"></canvas>
+                        <div class="vector-legend" id="vectorLegend">
+                            <div class="legend-title">地磁矢量场</div>
+                            <div class="legend-item">
+                                <div class="legend-color" style="background: linear-gradient(to right, #0066ff, #ff6600)"></div>
+                                <span>弱 → 强 (nT)</span>
+                            </div>
+                            <div class="legend-info" id="legendInfo">
+                                <div>年份: <span id="legendYear">-100</span></div>
+                                <div>中心: <span id="legendCenter">34.265°N, 108.955°E</span></div>
+                                <div>网格: <span id="legendGrid">15×15</span></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="vector-controls">
+                        <div class="control-group">
+                            <label>
+                                <input type="checkbox" id="showArrows" checked>
+                                显示箭头
+                            </label>
+                            <label>
+                                <input type="checkbox" id="showHeatmap" checked>
+                                显示热力图
+                            </label>
+                            <label>
+                                <input type="checkbox" id="animateField">
+                                动画效果
+                            </label>
+                        </div>
+                        <div class="control-group">
+                            <label>箭头大小</label>
+                            <input type="range" id="arrowSize" min="5" max="30" value="15">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="view" id="chartsView">
+                    <div class="charts-grid">
+                        <div class="chart-container">
+                            <h4>指向偏差趋势</h4>
+                            <canvas id="deviationChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h4>地磁场强度分布</h4>
+                            <canvas id="intensityChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h4>磁矩变化曲线</h4>
+                            <canvas id="momentChart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h4>温度影响分析</h4>
+                            <canvas id="tempChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="view" id="simulationView">
+                    <div class="simulation-results">
+                        <div class="simulation-header">
+                            <h3>指向精度仿真结果</h3>
+                            <button class="btn btn-secondary" id="refreshSimBtn">刷新结果</button>
+                        </div>
+                        <div class="simulation-table-wrapper">
+                            <table class="simulation-table" id="simulationTable">
+                                <thead>
+                                    <tr>
+                                        <th>仿真ID</th>
+                                        <th>设备</th>
+                                        <th>年份</th>
+                                        <th>理论方位</th>
+                                        <th>仿真方位</th>
+                                        <th>指向精度</th>
+                                        <th>磁矩</th>
+                                        <th>剩磁</th>
+                                        <th>温度</th>
+                                        <th>时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="simulationTableBody">
+                                    <tr><td colspan="10" class="loading">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="js/config.js"></script>
+    <script src="js/sinan3d.js"></script>
+    <script src="js/vectorfield.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/charts.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
