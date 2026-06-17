@@ -1,0 +1,148 @@
+groups:
+  - name: sinan_alerts
+    rules:
+      # ============================================================
+      # 后端服务告警
+      # ============================================================
+      - alert: SinanBackendDown
+        expr: up{job="sinan-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: sinan-backend
+        annotations:
+          summary: "司南后端服务宕机"
+          description: "服务 {{ $labels.instance }} 已经宕机超过1分钟"
+          runbook: "检查后端服务日志: docker logs sinan-backend"
+
+      - alert: HighHttpErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+          service: sinan-backend
+        annotations:
+          summary: "HTTP 错误率过高"
+          description: "过去5分钟内 HTTP 5xx 错误率达到 {{ $value | humanizePercentage }}"
+          threshold: "5%"
+
+      - alert: HighHttpRequestLatency
+        expr: histogram_quantile(0.95, rate(http_request_latency_seconds_bucket[5m])) > 2.0
+        for: 2m
+        labels:
+          severity: warning
+          service: sinan-backend
+        annotations:
+          summary: "HTTP 请求延迟过高"
+          description: "95分位请求延迟达到 {{ $value | humanizeDuration }}"
+          threshold: "2秒"
+
+      # ============================================================
+      # 传感器数据告警
+      # ============================================================
+      - alert: HighPointingDeviation
+        expr: simulation_pointing_accuracy_degrees > 10.0
+        for: 5m
+        labels:
+          severity: critical
+          service: sinan-backend
+          type: pointing_deviation
+        annotations:
+          summary: "指向偏差严重超限"
+          description: "指向偏差达到 {{ $value }}°，超过临界阈值10°"
+          threshold: "10°"
+
+      - alert: LowMagneticRemanence
+        expr: min_over_time(dtu_sensor_data_received_total[1h]) == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: sinan-backend
+          type: data_loss
+        annotations:
+          summary: "传感器数据长时间未更新"
+          description: "过去10分钟内没有收到新的传感器数据"
+
+      - alert: HighSensorDataInvalidRate
+        expr: rate(dtu_sensor_data_invalid_total[5m]) / rate(dtu_sensor_data_received_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: sinan-backend
+          type: data_quality
+        annotations:
+          summary: "传感器数据无效率过高"
+          description: "无效数据比例达到 {{ $value | humanizePercentage }}"
+          threshold: "10%"
+
+      # ============================================================
+      # ClickHouse 数据库告警
+      # ============================================================
+      - alert: ClickHouseDown
+        expr: up{job="clickhouse"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: clickhouse
+        annotations:
+          summary: "ClickHouse 数据库宕机"
+          description: "ClickHouse 服务已经宕机超过2分钟"
+
+      - alert: ClickHouseHighMemoryUsage
+        expr: (1 - (ClickHouse_MemoryStats_Free / ClickHouse_MemoryStats_Total)) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          service: clickhouse
+        annotations:
+          summary: "ClickHouse 内存使用率过高"
+          description: "内存使用率达到 {{ $value }}%"
+          threshold: "85%"
+
+      - alert: ClickHouseInsertFailures
+        expr: rate(clickhouse_insert_failed_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: clickhouse
+        annotations:
+          summary: "ClickHouse 插入失败"
+          description: "检测到数据库插入失败"
+
+      # ============================================================
+      # MQTT Broker 告警
+      # ============================================================
+      - alert: MosquittoDown
+        expr: up{job="mosquitto"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: mosquitto
+        annotations:
+          summary: "MQTT Broker 宕机"
+          description: "Mosquitto 服务已经宕机超过2分钟"
+
+      - alert: HighMqttFailureRate
+        expr: rate(alerts_mqtt_failed_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: mosquitto
+        annotations:
+          summary: "MQTT 消息推送失败"
+          description: "检测到 MQTT 告警推送失败"
+
+      # ============================================================
+      # 活跃告警数量
+      # ============================================================
+      - alert: TooManyActiveAlerts
+        expr: alerts_active > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: sinan-backend
+          type: alert_storm
+        annotations:
+          summary: "活跃告警数量过多"
+          description: "当前活跃告警数量达到 {{ $value }}"
+          threshold: "10个"

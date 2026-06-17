@@ -24,10 +24,12 @@ rand = "0.8"
 rand_distr = "0.4"
 nalgebra = "0.32"
 lazy_static = "1.4"
-tower-http = { version = "0.5", features = ["cors"] }
+tower-http = { version = "0.5", features = ["cors", "compression-gzip"] }
 futures = "0.3"
 bytes = "1.5"
 tokio-stream = { version = "0.1", features = ["sync"] }
+metrics = "0.22"
+metrics-exporter-prometheus = "0.15"
 
 [dev-dependencies]
 tokio-test = "0.4"

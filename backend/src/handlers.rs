@@ -1,14 +1,16 @@
 use crate::channels::{AlarmCommand, ChannelSenders, DtuCommand, GeomagneticCommand, SimulatorCommand};
 use crate::database::Database;
 use crate::errors::{AppError, Result};
+use crate::metrics::HttpRequestTimer;
 use crate::models::{AlertAcknowledgeRequest, PointingSimulationParams, SinanSensorData, VectorFieldRequest};
 use axum::{
+    body::Body,
     extract::{Query, State},
-    http::StatusCode,
-    Json,
-    response::sse::{Event, Sse},
+    http::{HeaderMap, StatusCode},
+    response::{sse::Event, IntoResponse, Json, Response, Sse},
 };
 use chrono::{DateTime, Utc};
+use metrics_exporter_prometheus::PrometheusHandle;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +21,7 @@ pub struct AppState {
     pub db: Database,
     pub senders: ChannelSenders,
     pub sensor_data_cache: Arc<RwLock<HashMap<String, SinanSensorData>>>,
+    pub metrics_handle: PrometheusHandle,
 }
 
 pub async fn health_check() -> Json<serde_json::Value> {
@@ -31,16 +34,27 @@ pub async fn health_check() -> Json<serde_json::Value> {
     }))
 }
 
+pub async fn metrics(State(state): State<AppState>) -> Response<Body> {
+    let metrics = state.metrics_handle.render();
+    let mut headers = HeaderMap::new();
+    headers.insert("content-type", "text/plain; version=0.0.4".parse().unwrap());
+    (headers, metrics).into_response()
+}
+
 pub async fn receive_sensor_data(
     State(state): State<AppState>,
     Json(data): Json<SinanSensorData>,
 ) -> Result<(StatusCode, Json<serde_json::Value>)> {
+    let timer = HttpRequestTimer::new("POST", "/api/v1/sensor");
+
     state
         .senders
         .dtu_tx
         .send(DtuCommand::ReceiveSensor(data))
         .await
         .map_err(|e| AppError::InternalError(format!("DTU通道发送失败: {}", e)))?;
+
+    timer.finish("200");
 
     Ok((StatusCode::OK, Json(serde_json::json!({
         "status": "success",

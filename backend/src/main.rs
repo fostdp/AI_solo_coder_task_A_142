@@ -10,6 +10,7 @@ mod geomagnetic_reconstructor;
 mod handlers;
 pub mod micromagnetic_simulation;
 mod magnetic_simulator;
+mod metrics;
 mod models;
 mod mqtt_service;
 
@@ -22,6 +23,7 @@ use crate::dtu_receiver::DtuReceiver;
 use crate::geomagnetic_reconstructor::GeomagneticReconstructor;
 use crate::handlers::AppState;
 use crate::magnetic_simulator::MagneticSimulatorActor;
+use crate::metrics::init_metrics;
 use crate::micromagnetic_simulation::MicromagneticSimulator;
 use crate::models::ArchaeologyMagneticData;
 use crate::mqtt_service::MqttService;
@@ -44,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     tracing::info!("正在启动司南磁石指向精度仿真系统 (Actor架构)...");
+
+    let metrics_handle = init_metrics();
+    tracing::info!("Prometheus指标采集初始化完成");
 
     let config = Config::from_env()?;
     tracing::info!("配置加载完成");
@@ -107,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db: db.clone(),
         senders: senders.clone(),
         sensor_data_cache: sensor_data_cache.clone(),
+        metrics_handle: metrics_handle.clone(),
     };
 
     let cors = CorsLayer::new()
@@ -116,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/metrics", get(handlers::metrics))
         .route("/api/v1/sensor", post(handlers::receive_sensor_data))
         .route("/api/v1/sensor/data", get(handlers::get_sensor_data))
         .route("/api/v1/sensor/latest", get(handlers::get_latest_sensor_data))

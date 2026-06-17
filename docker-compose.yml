@@ -1,0 +1,357 @@
+version: '3.8'
+
+# ============================================================
+# 古代司南磁石指向精度仿真与地磁场重建系统
+# Docker Compose 编排配置
+# ============================================================
+
+services:
+  # ============================================================
+  # 1. ClickHouse 时序数据库
+  # ============================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: sinan-clickhouse
+    hostname: clickhouse
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - CLICKHOUSE_DB=sinan_db
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+    ports:
+      - "8123:8123"    # HTTP 接口
+      - "9000:9000"    # 原生 TCP 接口
+      - "9363:9363"    # Prometheus 指标端口
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./deploy/clickhouse/config.xml:/etc/clickhouse-server/config.xml:ro
+      - ./scripts/clickhouse_init.sql:/docker-entrypoint-initdb.d/00_init.sql:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - sinan-net
+
+  # ============================================================
+  # 2. Eclipse Mosquitto MQTT Broker
+  # ============================================================
+  mosquitto:
+    image: eclipse-mosquitto:2.0-openssl
+    container_name: sinan-mosquitto
+    hostname: mosquitto
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "1883:1883"    # MQTT 端口
+      - "9001:9001"    # WebSocket 端口
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h localhost -p 1883 -t 'health/check' -m 'ping' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sinan-net
+
+  # ============================================================
+  # 3. Mosquitto Prometheus Exporter
+  # ============================================================
+  mosquitto-exporter:
+    image: sapcc/mosquitto-exporter:latest
+    container_name: sinan-mosquitto-exporter
+    hostname: mosquitto-exporter
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - MQTT_BROKER_URL=tcp://mosquitto:1883
+    ports:
+      - "9234:9234"
+    depends_on:
+      - mosquitto
+    networks:
+      - sinan-net
+
+  # ============================================================
+  # 4. Rust 后端服务 (多阶段静态编译)
+  # ============================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: "1"
+    container_name: sinan-backend
+    hostname: backend
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - RUST_LOG=info,sinan_backend=debug
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=8080
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
+      - CLICKHOUSE_DATABASE=sinan_db
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_CLIENT_ID=sinan-backend-docker
+      - MQTT_TOPIC=sinan/alerts
+    ports:
+      - "8080:8080"    # API 端口
+    volumes:
+      - backend_logs:/app/logs
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - sinan-net
+
+  # ============================================================
+  # 5. 前端静态资源服务 (Nginx + Gzip)
+  # ============================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sinan-frontend
+    hostname: frontend
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "80:80"        # HTTP 端口
+    volumes:
+      - frontend_logs:/var/log/nginx
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sinan-net
+
+  # ============================================================
+  # 6. 司南传感器模拟器 (增强版)
+  # ============================================================
+  sensor-simulator:
+    build:
+      context: ./scripts
+      dockerfile: Dockerfile
+    container_name: sinan-sensor-simulator
+    hostname: sensor-simulator
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - SIMULATOR_BACKEND_URL=http://backend:8080
+      - SIMULATOR_MQTT_URL=mqtt://mosquitto:1883
+      - SIMULATOR_DEVICE_ID=sim-sinan-001
+      - SIMULATOR_SEND_INTERVAL_MS=1000
+    command: >
+      python sensor_simulator_enhanced.py
+        --device-id sim-sinan-001
+        --device-name "Docker模拟器·汉代司南"
+        --material magnetite_natural
+        --period han_dynasty
+        --interval 1000
+        --lat 34.265
+        --lon 108.955
+        --alert-threshold 5.0
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - sinan-net
+    profiles:
+      - simulator
+
+  # ============================================================
+  # 7. Prometheus 指标采集
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:v2.52-alpine
+    container_name: sinan-prometheus
+    hostname: prometheus
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=50GB'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/rules:/etc/prometheus/rules:ro
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - sinan-net
+    profiles:
+      - monitoring
+
+  # ============================================================
+  # 8. Grafana 可视化面板
+  # ============================================================
+  grafana:
+    image: grafana/grafana:10.4-ubuntu
+    container_name: sinan-grafana
+    hostname: grafana
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_USERS_ALLOW_ORG_CREATE=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource,yesoreyeram-boomtable-panel
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks:
+      - sinan-net
+    profiles:
+      - monitoring
+
+  # ============================================================
+  # 9. cAdvisor 容器监控
+  # ============================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: sinan-cadvisor
+    hostname: cadvisor
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - sinan-net
+    profiles:
+      - monitoring
+
+  # ============================================================
+  # 10. Node Exporter 主机监控
+  # ============================================================
+  node-exporter:
+    image: prom/node-exporter:v1.8-alpine
+    container_name: sinan-node-exporter
+    hostname: node-exporter
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+    command:
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/.+)($$|/)'
+      - '--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$'
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro,rslave
+    pid: host
+    networks:
+      - sinan-net
+    profiles:
+      - monitoring
+
+# ============================================================
+# 网络配置
+# ============================================================
+networks:
+  sinan-net:
+    name: sinan-network
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1
+
+# ============================================================
+# 数据卷配置
+# ============================================================
+volumes:
+  clickhouse_data:
+    driver: local
+    name: sinan-clickhouse-data
+  clickhouse_logs:
+    driver: local
+    name: sinan-clickhouse-logs
+  mosquitto_data:
+    driver: local
+    name: sinan-mosquitto-data
+  mosquitto_logs:
+    driver: local
+    name: sinan-mosquitto-logs
+  backend_logs:
+    driver: local
+    name: sinan-backend-logs
+  frontend_logs:
+    driver: local
+    name: sinan-frontend-logs
+  prometheus_data:
+    driver: local
+    name: sinan-prometheus-data
+  grafana_data:
+    driver: local
+    name: sinan-grafana-data
